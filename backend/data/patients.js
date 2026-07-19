@@ -6,10 +6,10 @@ const demoAppointmentTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 const patients = [
   {
     id: "DC-1001",
-    name: "Aisha Khan",
+    name: "Sarah Faisal",
     dob: "01/15/1998",
     phone: "5551234567",
-    email: "aisha@example.com",
+    email: "sarah@example.com",
     appointmentTime: demoAppointmentTime,
     appointmentType: "New Patient Exam",
     providerName: "Dr. YarKhan",
