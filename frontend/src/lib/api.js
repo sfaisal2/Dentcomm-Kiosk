@@ -8,7 +8,9 @@ async function request(path, options = {}) {
 
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || data.message || "Request failed");
+    const error = new Error(data.error || data.message || "Request failed");
+    if (data.blockers) error.blockers = data.blockers;
+    throw error;
   }
   return data;
 }
@@ -29,12 +31,23 @@ export function getPatient(id) {
   return request(`/dentcomm/patients/${id}`);
 }
 
-export function scanId(patientId, payload = {}) {
-  return request(`/dentcomm/kiosk/${patientId}/id-scan`, { method: "POST", body: JSON.stringify(payload) });
+export function scanId(patientId, imageBase64) {
+  return request(`/dentcomm/kiosk/${patientId}/id-scan`, { method: "POST", body: JSON.stringify({ imageBase64 }) });
 }
 
-export function scanInsurance(patientId, payload = {}) {
-  return request(`/dentcomm/kiosk/${patientId}/insurance-scan`, { method: "POST", body: JSON.stringify(payload) });
+export function scanInsurance(patientId, frontImageBase64, backImageBase64) {
+  return request(`/dentcomm/kiosk/${patientId}/insurance-scan`, {
+    method: "POST",
+    body: JSON.stringify({ frontImageBase64, backImageBase64 })
+  });
+}
+
+export function submitInsuranceManually(patientId, payload) {
+  return request(`/dentcomm/kiosk/${patientId}/insurance-manual`, { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function confirmAddress(patientId, payload) {
+  return request(`/dentcomm/kiosk/${patientId}/address`, { method: "PATCH", body: JSON.stringify(payload) });
 }
 
 export function captureSignature(patientId, formType) {

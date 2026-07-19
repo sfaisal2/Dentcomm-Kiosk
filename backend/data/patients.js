@@ -1,3 +1,8 @@
+// Demo appointment is anchored to server start time so the kiosk lookup
+// window (spec §Screen 1 — "appointments within the next 4 hours") has
+// something valid to match against on every run.
+const demoAppointmentTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
 const patients = [
   {
     id: "DC-1001",
@@ -5,9 +10,10 @@ const patients = [
     dob: "01/15/1998",
     phone: "5551234567",
     email: "aisha@example.com",
-    appointmentTime: "2026-05-20T10:00:00",
+    appointmentTime: demoAppointmentTime,
     appointmentType: "New Patient Exam",
     providerName: "Dr. YarKhan",
+    bookingAddress: "123 Main Street, Houston, TX 77001",
     status: "pre_arrival",
     pmsAppointmentId: "PMS-APT-5001",
     pmsPatientId: null,
@@ -31,7 +37,9 @@ const patients = [
       financialPolicy: null,
       treatmentConsent: null
     },
-    progress: 25,
+    progress: 10,
+    noShowAt: null,
+    previouslyCollectedAt: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   }

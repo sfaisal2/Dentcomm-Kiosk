@@ -12,11 +12,16 @@ async function createLightweightAppointment(patient) {
 }
 
 async function createFullPmsChart(patient) {
+  // ID number is retained in DentComm for identity verification only and
+  // must never be transferred to the PMS (spec §9.1).
+  const { idNumber, ...demographicsForPms } = patient.kioskData.idScan || {};
+
   return {
     pmsPatientId: `PMS-CHART-${uuidv4()}`,
     createdAt: new Date().toISOString(),
     transferredData: {
-      demographics: patient.kioskData.idScan,
+      demographics: demographicsForPms,
+      addressOverride: patient.kioskData.addressOverride,
       insurance: patient.kioskData.insuranceScan,
       forms: patient.forms,
       consentSignatures: patient.consentSignatures,

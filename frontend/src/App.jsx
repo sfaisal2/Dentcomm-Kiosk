@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import PatientLookup from "./components/PatientLookup";
 import ProgressBadge from "./components/ProgressBadge";
+import { fileToBase64 } from "./lib/fileToBase64";
 import {
   captureSignature,
   checkInPatient,
+  confirmAddress,
   getNoShowArchive,
   getPatient,
   getPreArrivalPatients,
@@ -11,6 +13,7 @@ import {
   reactivatePatient,
   scanId,
   scanInsurance,
+  submitInsuranceManually,
   verifyInsurance
 } from "./lib/api";
 import "./styles.css";
@@ -19,9 +22,128 @@ function StepButton({ children, onClick, disabled }) {
   return <button className="secondary" onClick={onClick} disabled={disabled}>{children}</button>;
 }
 
+function IdScanStep({ patient, onScanned }) {
+  const [file, setFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function runScan() {
+    if (!file) return;
+    setLoading(true);
+    setError("");
+    try {
+      const imageBase64 = await fileToBase64(file);
+      onScanned(await scanId(patient.id, imageBase64));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="scan-controls">
+      <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files[0] || null)} />
+      <StepButton onClick={runScan} disabled={!file || loading}>{loading ? "Reading ID with OCR..." : "Scan ID"}</StepButton>
+      {error && <p className="notice">{error}</p>}
+    </div>
+  );
+}
+
+function InsuranceScanStep({ patient, onScanned, disabled }) {
+  const [frontFile, setFrontFile] = useState(null);
+  const [backFile, setBackFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function runScan() {
+    if (!frontFile) return;
+    setLoading(true);
+    setError("");
+    try {
+      const frontImageBase64 = await fileToBase64(frontFile);
+      const backImageBase64 = backFile ? await fileToBase64(backFile) : null;
+      onScanned(await scanInsurance(patient.id, frontImageBase64, backImageBase64));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="scan-controls">
+      <label className="muted">
+        Front of card
+        <input type="file" accept="image/*" disabled={disabled} onChange={(e) => setFrontFile(e.target.files[0] || null)} />
+      </label>
+      <label className="muted">
+        Back of card (optional)
+        <input type="file" accept="image/*" disabled={disabled} onChange={(e) => setBackFile(e.target.files[0] || null)} />
+      </label>
+      <StepButton onClick={runScan} disabled={disabled || !frontFile || loading}>
+        {loading ? "Reading card with OCR..." : "Scan insurance card"}
+      </StepButton>
+      {error && <p className="notice">{error}</p>}
+    </div>
+  );
+}
+
+function AddressConfirmPrompt({ patient, onUpdated }) {
+  const [updatedAddress, setUpdatedAddress] = useState("");
+  const [editing, setEditing] = useState(false);
+
+  async function confirm() {
+    onUpdated(await confirmAddress(patient.id, { confirmed: true }));
+  }
+
+  async function saveUpdate() {
+    onUpdated(await confirmAddress(patient.id, { confirmed: false, updatedAddress }));
+  }
+
+  return (
+    <div className="prompt-box">
+      <p><strong>Is this still your current address?</strong></p>
+      <p className="muted">{patient.kioskData.idScan.address}</p>
+      {!editing ? (
+        <div className="action-row">
+          <button onClick={confirm}>Yes, that's correct</button>
+          <button className="secondary" onClick={() => setEditing(true)}>No, update it</button>
+        </div>
+      ) : (
+        <div className="action-row">
+          <input placeholder="New address" value={updatedAddress} onChange={(e) => setUpdatedAddress(e.target.value)} />
+          <button onClick={saveUpdate} disabled={!updatedAddress}>Save</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InsuranceManualEntry({ patient, onSubmitted }) {
+  const [memberId, setMemberId] = useState("");
+  const [groupNumber, setGroupNumber] = useState("");
+
+  async function submit() {
+    onSubmitted(await submitInsuranceManually(patient.id, { memberId, groupNumber }));
+  }
+
+  return (
+    <div className="prompt-box">
+      <p><strong>Enter insurance details manually</strong></p>
+      <div className="form-grid">
+        <input placeholder="Member ID" value={memberId} onChange={(e) => setMemberId(e.target.value)} />
+        <input placeholder="Group number" value={groupNumber} onChange={(e) => setGroupNumber(e.target.value)} />
+        <button onClick={submit} disabled={!memberId || !groupNumber}>Submit</button>
+      </div>
+    </div>
+  );
+}
+
 function KioskFlow() {
   const [patient, setPatient] = useState(null);
   const [message, setMessage] = useState("");
+  const [showManualInsurance, setShowManualInsurance] = useState(false);
 
   async function runStep(action, successMessage) {
     try {
@@ -35,6 +157,10 @@ function KioskFlow() {
 
   if (!patient) return <PatientLookup onFound={setPatient} />;
 
+  const idScan = patient.kioskData?.idScan;
+  const insuranceScan = patient.kioskData?.insuranceScan;
+  const addressPending = idScan?.needsAddressConfirmation && !patient.kioskData?.addressOverride;
+
   return (
     <section className="card kiosk-card">
       <p className="eyebrow">Patient-facing kiosk</p>
@@ -45,14 +171,33 @@ function KioskFlow() {
       <div className="step-list">
         <div className="step">
           <h3>1. Government ID scan</h3>
-          <p>Mock OCR extracts legal name, DOB, address, ID number, and issue date.</p>
-          <StepButton onClick={() => runStep(() => scanId(patient.id), "ID scan saved.")}>Run mock ID scan</StepButton>
+          <p>Upload a photo of a government ID — Tesseract OCR extracts legal name, DOB, address, ID number, and issue date.</p>
+          <IdScanStep patient={patient} onScanned={(updated) => { setPatient(updated); setMessage("ID scan saved."); }} />
+
+          {addressPending && (
+            <AddressConfirmPrompt patient={patient} onUpdated={(updated) => { setPatient(updated); setMessage("Address confirmation saved."); }} />
+          )}
         </div>
 
         <div className="step">
           <h3>2. Insurance card scan</h3>
-          <p>Mock OCR extracts carrier, member ID, group number, plan type, and payer ID.</p>
-          <StepButton onClick={() => runStep(() => scanInsurance(patient.id), "Insurance scan saved.")} disabled={!patient.kioskData?.idScan}>Run mock insurance scan</StepButton>
+          <p>Upload photos of the insurance card — Tesseract OCR extracts carrier, member ID, group number, and plan type.</p>
+          <InsuranceScanStep
+            patient={patient}
+            disabled={!idScan || addressPending}
+            onScanned={(updated) => { setPatient(updated); setMessage("Insurance scan saved."); }}
+          />
+          <button className="link-button" disabled={!idScan || addressPending} onClick={() => setShowManualInsurance((v) => !v)}>
+            Scan failed? Enter manually
+          </button>
+
+          {showManualInsurance && (
+            <InsuranceManualEntry patient={patient} onSubmitted={(updated) => { setPatient(updated); setMessage("Insurance details saved."); setShowManualInsurance(false); }} />
+          )}
+
+          {insuranceScan && patient.dentverify.status === "pending" && (
+            <p className="notice">We are checking your insurance benefits in the background — no action needed.</p>
+          )}
         </div>
 
         <div className="step">
@@ -61,13 +206,32 @@ function KioskFlow() {
           <StepButton onClick={() => runStep(async () => {
             await captureSignature(patient.id, "financialPolicy");
             return captureSignature(patient.id, "treatmentConsent");
-          }, "Required signatures captured.")} disabled={!patient.kioskData?.insuranceScan}>Capture mock signatures</StepButton>
+          }, "Required signatures captured.")} disabled={!insuranceScan}>Capture mock signatures</StepButton>
         </div>
       </div>
 
       {message && <p className="notice">{message}</p>}
+      {patient.status === "ready_to_transfer" && (
+        <p className="notice success">Submit — I'll see you inside! A staff member will check you in.</p>
+      )}
       <button className="link-button" onClick={() => setPatient(null)}>Back to lookup</button>
     </section>
+  );
+}
+
+const badgeLabels = {
+  formsStatus: { complete: "Forms complete", partial: "Forms partial" },
+  insuranceStatus: { verified: "Insurance verified", pending: "Insurance pending", not_started: "Insurance not started" }
+};
+
+function StatusBadges({ badges }) {
+  if (!badges) return null;
+  return (
+    <div className="badge-row">
+      <span className={`pill ${badges.formsStatus}`}>{badgeLabels.formsStatus[badges.formsStatus]}</span>
+      <span className={`pill ${badges.insuranceStatus}`}>{badgeLabels.insuranceStatus[badges.insuranceStatus]}</span>
+      {badges.needsAttention && <span className="pill attention">Needs attention</span>}
+    </div>
   );
 }
 
@@ -104,7 +268,7 @@ function StaffDashboard() {
       if (result.patient) setSelected(result.patient);
       await load();
     } catch (error) {
-      setMessage(error.message);
+      setMessage(error.blockers ? `${error.message} (${error.blockers.join(" ")})` : error.message);
     }
   }
 
@@ -122,7 +286,7 @@ function StaffDashboard() {
         <div className="table">
           {patients.map((patient) => (
             <button className="row" key={patient.id} onClick={() => selectPatient(patient.id)}>
-              <span><strong>{patient.name}</strong><small>{patient.appointmentType}</small></span>
+              <span><strong>{patient.name}</strong><small>{patient.appointmentType}</small><StatusBadges badges={patient.badges} /></span>
               <span>{patient.status}</span>
               <span>{patient.progress}%</span>
             </button>
@@ -149,14 +313,29 @@ function StaffDashboard() {
             <h2>{selected.name}</h2>
             <p className="muted">DOB: {selected.dob} • Phone: {selected.phone}</p>
             <ProgressBadge value={selected.progress} status={selected.status} />
+            <StatusBadges badges={selected.badges} />
+
+            {selected.previouslyCollectedAt && (
+              <p className="notice">Previously collected on {new Date(selected.previouslyCollectedAt).toLocaleDateString()} — confirm or re-collect as needed.</p>
+            )}
+
+            {selected.transferReadiness && !selected.transferReadiness.ready && (
+              <div className="prompt-box">
+                <p><strong>Still needed before PMS transfer:</strong></p>
+                <ul>
+                  {selected.transferReadiness.blockers.map((b) => <li key={b}>{b}</li>)}
+                </ul>
+              </div>
+            )}
 
             <div className="panels">
               <article>
-                <h3>ID scan</h3>
+                <h3>ID scan {selected.kioskData.idScan?.needsStaffReview && <span className="pill attention">Low confidence — review</span>}</h3>
                 <pre>{JSON.stringify(selected.kioskData.idScan, null, 2)}</pre>
+                <pre>{JSON.stringify(selected.kioskData.addressOverride, null, 2)}</pre>
               </article>
               <article>
-                <h3>Insurance</h3>
+                <h3>Insurance {selected.kioskData.insuranceScan?.entryMethod === "manual" && <span className="pill attention">Manual entry</span>}</h3>
                 <pre>{JSON.stringify(selected.kioskData.insuranceScan, null, 2)}</pre>
               </article>
               <article>
@@ -166,7 +345,7 @@ function StaffDashboard() {
             </div>
 
             <div className="action-row">
-              <button onClick={() => staffAction(() => verifyInsurance(selected.id), "Insurance verified.")} disabled={!selected.kioskData.insuranceScan}>Run DentVerify</button>
+              <button onClick={() => staffAction(() => verifyInsurance(selected.id), "Insurance verified.")} disabled={!selected.kioskData.insuranceScan}>Re-verify insurance</button>
               <button onClick={() => staffAction(() => checkInPatient(selected.id), "Checked in.")} disabled={selected.status === "checked_in" || selected.status === "no_show"}>Check In & Transfer to PMS</button>
               <button className="danger" onClick={() => staffAction(() => markNoShow(selected.id), "Marked no-show.")} disabled={selected.status === "checked_in" || selected.status === "no_show"}>Mark no-show</button>
               {selected.status === "no_show" && <button onClick={() => staffAction(() => reactivatePatient(selected.id), "Reactivated.")}>Reactivate</button>}

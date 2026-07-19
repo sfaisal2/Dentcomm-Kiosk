@@ -4,3 +4,10 @@ build/
 .env
 .DS_Store
 npm-debug.log*
+
+# Tesseract downloads its English language data into the backend's working
+# directory on first OCR call — a runtime cache, not source.
+backend/*.traineddata
+
+# Per-user Claude Code permission grants, not shared project config.
+.claude/settings.local.json
