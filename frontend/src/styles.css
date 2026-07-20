@@ -1,5 +1,5 @@
 :root {
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Heebo", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #172033;
   background: #f4f7fb;
 }
@@ -31,7 +31,7 @@ main { min-height: 100vh; padding: 24px; }
 }
 
 .kiosk-card { max-width: 780px; margin: 0 auto; }
-.eyebrow { text-transform: uppercase; letter-spacing: .12em; color: #3464d4; font-weight: 700; font-size: 12px; }
+.eyebrow { text-transform: uppercase; letter-spacing: .12em; color: #1976d2; font-weight: 700; font-size: 12px; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { font-size: clamp(36px, 6vw, 64px); margin-bottom: 12px; }
 h2 { font-size: 28px; }
@@ -52,7 +52,7 @@ button, .link-button {
   border: 0;
   border-radius: 14px;
   padding: 13px 18px;
-  background: #3464d4;
+  background: #1976d2;
   color: white;
   font-weight: 800;
   cursor: pointer;
@@ -61,7 +61,7 @@ button, .link-button {
 button:disabled { opacity: .55; cursor: not-allowed; }
 button.secondary, .link-button { background: #edf2ff; color: #23427f; }
 button.active { background: #172033; }
-button.danger { background: #d92d20; }
+button.danger { background: #dc004e; }
 button.small { padding: 9px 12px; border-radius: 10px; }
 
 .notice {
@@ -76,7 +76,7 @@ button.small { padding: 9px 12px; border-radius: 10px; }
 .progress-wrap { margin: 22px 0; }
 .progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; text-transform: capitalize; }
 .progress-bar { height: 12px; background: #e7ecf5; border-radius: 99px; overflow: hidden; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, #3464d4, #17a2b8); }
+.progress-fill { height: 100%; background: linear-gradient(90deg, #1976d2, #17a2b8); }
 
 .step-list { display: grid; gap: 16px; }
 .step {
@@ -116,6 +116,16 @@ pre { white-space: pre-wrap; font-size: 12px; }
 .scan-controls label { font-weight: 700; display: grid; gap: 6px; font-size: 13px; }
 .scan-controls input[type="file"] { font-size: 13px; }
 
+.signature-pad {
+  margin-top: 8px;
+  border: 1px solid #ccd5e1;
+  border-radius: 14px;
+  background: #ffffff;
+  overflow: hidden;
+}
+.signature-canvas { width: 100%; height: 160px; display: block; touch-action: none; }
+.signature-pad-actions { display: flex; justify-content: flex-end; padding: 8px; border-top: 1px solid #e5e9f2; }
+
 .prompt-box {
   margin-top: 14px;
   background: #fff8e6;
@@ -125,6 +135,30 @@ pre { white-space: pre-wrap; font-size: 12px; }
 }
 .prompt-box ul { margin: 8px 0 0; padding-left: 18px; }
 .notice.success { background: #eaf3ff; border-color: #bcdaff; color: #17427a; }
+
+.session-banner { max-width: 780px; margin: 0 auto 16px; }
+
+.forms-review { margin-top: 10px; }
+.forms-list { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 8px; }
+.forms-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #fbfdff;
+  border: 1px solid #e5e9f2;
+  border-radius: 12px;
+}
+
+.transfer-panel {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid #e5e9f2;
+  border-radius: 16px;
+  background: #fbfdff;
+}
+.transfer-panel h3 { margin-bottom: 8px; }
 
 .badge-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .pill {

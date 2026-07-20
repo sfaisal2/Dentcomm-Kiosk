@@ -134,6 +134,19 @@ function evaluateAddressPrompt(idScanData, patient) {
   };
 }
 
+// Spec §6.1: "Flag if ZIP does not match the practice's service area."
+function flagZipServiceArea(idScanData, settings) {
+  const prefixes = settings.serviceAreaZipPrefixes || [];
+  if (prefixes.length === 0) return { zipOutOfServiceArea: false };
+
+  const zipMatch = (idScanData.address || "").match(/\b(\d{5})(?:-\d{4})?\b/);
+  const zip = zipMatch ? zipMatch[1] : null;
+  if (!zip) return { zipOutOfServiceArea: false };
+
+  const inArea = prefixes.some((prefix) => zip.startsWith(prefix));
+  return { zipOutOfServiceArea: !inArea, scannedZip: zip };
+}
+
 // Screen 3 failure path (spec §4): manual entry fallback if the card scan
 // fails. Always flagged for staff review, and still re-triggers DentVerify.
 function buildManualInsuranceEntry({ carrier, memberId, groupNumber, planType }) {
@@ -156,5 +169,6 @@ module.exports = {
   extractIdDataFromImage,
   extractInsuranceDataFromImage,
   evaluateAddressPrompt,
+  flagZipServiceArea,
   buildManualInsuranceEntry
 };

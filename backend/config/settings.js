@@ -11,7 +11,10 @@ const settings = {
   archiveRetentionDays: 90,
   reVerificationWindowDays: 30,
   kioskSessionTimeoutMinutes: 3,
-  kioskLookupWindowHours: 4
+  kioskLookupWindowHours: 4,
+  // Spec §6.1 — ZIP prefixes considered inside the practice service area.
+  // Empty array disables the check. Demo practice is Houston, TX (770xx/771xx).
+  serviceAreaZipPrefixes: ["770", "771", "772", "773", "774", "775"]
 };
 
 module.exports = settings;

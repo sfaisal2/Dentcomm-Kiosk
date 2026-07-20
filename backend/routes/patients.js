@@ -5,6 +5,7 @@ const { createLightweightAppointment, createFullPmsChart, markAppointmentNoShow 
 const {
   updatePatientStatus,
   calculateProgress,
+  getKioskReadiness,
   getTransferReadiness,
   syncStatus
 } = require("../services/patientStateService");
@@ -54,7 +55,11 @@ router.get("/:id", (req, res) => {
   const patient = patients.find((p) => p.id === req.params.id);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
   calculateProgress(patient);
-  res.json({ ...patient, transferReadiness: getTransferReadiness(patient) });
+  res.json({
+    ...patient,
+    kioskReadiness: getKioskReadiness(patient),
+    transferReadiness: getTransferReadiness(patient)
+  });
 });
 
 router.patch("/:id/kiosk-data", (req, res) => {
@@ -131,6 +136,37 @@ router.post("/:id/reactivate", (req, res) => {
   patient.updatedAt = new Date().toISOString();
 
   res.json({ message: "Patient record reactivated for rescheduling.", patient });
+});
+
+// Spec §5.1 quick action: log a follow-up contact attempt (CRM touch) without
+// changing the patient's kiosk state.
+router.post("/:id/follow-up", (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id);
+  if (!patient) return res.status(404).json({ error: "Patient not found" });
+
+  const entry = { note: (req.body && req.body.note) || "Follow-up logged", at: new Date().toISOString() };
+  patient.followUps = patient.followUps || [];
+  patient.followUps.push(entry);
+  patient.updatedAt = new Date().toISOString();
+
+  res.json({ message: "Follow-up logged.", patient });
+});
+
+// Spec §5.4: "Archive (marks the record as inactive after configurable
+// retention period)." Only a no-show record can be archived; it then drops
+// off the active no-show list.
+router.post("/:id/archive", (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id);
+  if (!patient) return res.status(404).json({ error: "Patient not found" });
+  if (patient.status !== "no_show") {
+    return res.status(400).json({ error: "Only a no-show record can be archived." });
+  }
+
+  patient.archived = true;
+  patient.archivedAt = new Date().toISOString();
+  patient.updatedAt = new Date().toISOString();
+
+  res.json({ message: "Record archived.", patient });
 });
 
 module.exports = router;

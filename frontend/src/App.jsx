@@ -1,14 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import PatientLookup from "./components/PatientLookup";
 import ProgressBadge from "./components/ProgressBadge";
+import SignaturePad from "./components/SignaturePad";
 import { fileToBase64 } from "./lib/fileToBase64";
+import { generateConsentPdf } from "./lib/generateConsentPdf";
+import { getSignatureDataUrl } from "./lib/signature";
 import {
+  API_BASE_URL,
+  archivePatient,
   captureSignature,
   checkInPatient,
+  completeForm,
   confirmAddress,
+  followUpPatient,
   getNoShowArchive,
   getPatient,
   getPreArrivalPatients,
+  getSettings,
   markNoShow,
   reactivatePatient,
   scanId,
@@ -17,6 +25,17 @@ import {
   verifyInsurance
 } from "./lib/api";
 import "./styles.css";
+
+const CONSENT_FORMS = [
+  { key: "financialPolicy", label: "Financial Policy" },
+  { key: "treatmentConsent", label: "Treatment Consent" }
+];
+
+const HOME_FORMS = [
+  { key: "medicalHistory", label: "Medical History" },
+  { key: "healthQuestionnaire", label: "Health Questionnaire" },
+  { key: "hipaaAcknowledgment", label: "HIPAA Acknowledgment" }
+];
 
 function StepButton({ children, onClick, disabled }) {
   return <button className="secondary" onClick={onClick} disabled={disabled}>{children}</button>;
@@ -45,6 +64,9 @@ function IdScanStep({ patient, onScanned }) {
     <div className="scan-controls">
       <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files[0] || null)} />
       <StepButton onClick={runScan} disabled={!file || loading}>{loading ? "Reading ID with OCR..." : "Scan ID"}</StepButton>
+      {patient.kioskData?.offerStaffAssist && (
+        <p className="notice">We're having trouble reading your ID. Please ask a staff member to assist.</p>
+      )}
       {error && <p className="notice">{error}</p>}
     </div>
   );
@@ -78,7 +100,7 @@ function InsuranceScanStep({ patient, onScanned, disabled }) {
         <input type="file" accept="image/*" disabled={disabled} onChange={(e) => setFrontFile(e.target.files[0] || null)} />
       </label>
       <label className="muted">
-        Back of card (optional)
+        Back of card
         <input type="file" accept="image/*" disabled={disabled} onChange={(e) => setBackFile(e.target.files[0] || null)} />
       </label>
       <StepButton onClick={runScan} disabled={disabled || !frontFile || loading}>
@@ -140,22 +162,133 @@ function InsuranceManualEntry({ patient, onSubmitted }) {
   );
 }
 
+// Screen 4 (spec §4): Forms Review — checklist of all forms with status, inline
+// completion of incomplete home forms, and a final submit.
+function FormsReviewStep({ patient, onUpdated, onSubmit }) {
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+
+  async function complete(formType) {
+    setBusy(formType);
+    setError("");
+    try {
+      onUpdated(await completeForm(patient.id, formType));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const allHomeComplete = HOME_FORMS.every((f) => patient.forms?.[f.key]?.completed);
+
+  return (
+    <div className="forms-review">
+      <ul className="forms-list">
+        {HOME_FORMS.map(({ key, label }) => {
+          const form = patient.forms?.[key];
+          return (
+            <li key={key}>
+              <span>{label}</span>
+              {form?.completed ? (
+                <span className="pill complete">✓ Completed{form.completedAt ? ` ${new Date(form.completedAt).toLocaleDateString()}` : ""}</span>
+              ) : (
+                <button className="secondary small" onClick={() => complete(key)} disabled={busy === key}>
+                  {busy === key ? "Saving..." : "Complete now"}
+                </button>
+              )}
+            </li>
+          );
+        })}
+        {CONSENT_FORMS.map(({ key, label }) => (
+          <li key={key}>
+            <span>{label}</span>
+            <span className="pill pending">Signature collected at check-in</span>
+          </li>
+        ))}
+      </ul>
+      {error && <p className="notice">{error}</p>}
+      <button onClick={onSubmit} disabled={!allHomeComplete}>Submit — I'll see you inside!</button>
+    </div>
+  );
+}
+
+function KioskConfirmation({ patient, onDone }) {
+  return (
+    <section className="card kiosk-card">
+      <p className="eyebrow">All set</p>
+      <h1>Thank you, {patient.name.split(" ")[0]}!</h1>
+      <p>Your check-in information is complete.</p>
+      <p className="muted">Appointment: {new Date(patient.appointmentTime).toLocaleString()} with {patient.providerName}</p>
+      <p className="notice success">Please have a seat — a staff member will check you in shortly.</p>
+      <button className="link-button" onClick={onDone}>Done</button>
+    </section>
+  );
+}
+
 function KioskFlow() {
   const [patient, setPatient] = useState(null);
   const [message, setMessage] = useState("");
   const [showManualInsurance, setShowManualInsurance] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const timerRef = useRef(null);
+  const timeoutMsRef = useRef(3 * 60 * 1000);
 
-  async function runStep(action, successMessage) {
-    try {
-      const updated = await action();
-      setPatient(updated);
-      setMessage(successMessage);
-    } catch (error) {
-      setMessage(error.message);
+  // Idle timeout is configured in DentComm Settings (spec §8).
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        if (s?.kioskSessionTimeoutMinutes) timeoutMsRef.current = s.kioskSessionTimeoutMinutes * 60 * 1000;
+      })
+      .catch(() => {});
+  }, []);
+
+  // Auto-lock to the welcome screen after inactivity (spec §8/§9.1) so no PHI
+  // stays on screen for the next person.
+  useEffect(() => {
+    if (!patient) return undefined;
+
+    function resetTimer() {
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        setPatient(null);
+        setSubmitted(false);
+        setShowManualInsurance(false);
+        setMessage("");
+        setTimedOut(true);
+      }, timeoutMsRef.current);
     }
+
+    const events = ["mousemove", "mousedown", "keydown", "touchstart", "click"];
+    events.forEach((e) => window.addEventListener(e, resetTimer));
+    resetTimer();
+
+    return () => {
+      clearTimeout(timerRef.current);
+      events.forEach((e) => window.removeEventListener(e, resetTimer));
+    };
+  }, [patient]);
+
+  function startSession(found) {
+    setTimedOut(false);
+    setPatient(found);
   }
 
-  if (!patient) return <PatientLookup onFound={setPatient} />;
+  if (patient && submitted) {
+    return <KioskConfirmation patient={patient} onDone={() => { setSubmitted(false); setPatient(null); }} />;
+  }
+
+  if (!patient) {
+    return (
+      <>
+        {timedOut && (
+          <p className="notice session-banner">Your session timed out for privacy. Please look up your appointment again.</p>
+        )}
+        <PatientLookup onFound={startSession} />
+      </>
+    );
+  }
 
   const idScan = patient.kioskData?.idScan;
   const insuranceScan = patient.kioskData?.insuranceScan;
@@ -171,7 +304,7 @@ function KioskFlow() {
       <div className="step-list">
         <div className="step">
           <h3>1. Government ID scan</h3>
-          <p>Upload a photo of a government ID — Tesseract OCR extracts legal name, DOB, address, ID number, and issue date.</p>
+          <p>Place your government-issued photo ID on the scanner. OCR extracts your name, DOB, address, and issue date.</p>
           <IdScanStep patient={patient} onScanned={(updated) => { setPatient(updated); setMessage("ID scan saved."); }} />
 
           {addressPending && (
@@ -181,7 +314,7 @@ function KioskFlow() {
 
         <div className="step">
           <h3>2. Insurance card scan</h3>
-          <p>Upload photos of the insurance card — Tesseract OCR extracts carrier, member ID, group number, and plan type.</p>
+          <p>Place the front and back of your insurance card on the scanner. OCR extracts carrier, member ID, group number, and plan type.</p>
           <InsuranceScanStep
             patient={patient}
             disabled={!idScan || addressPending}
@@ -201,19 +334,17 @@ function KioskFlow() {
         </div>
 
         <div className="step">
-          <h3>3. Consent signatures</h3>
-          <p>In the real app this would open a signature pad. For now, it saves mock signatures.</p>
-          <StepButton onClick={() => runStep(async () => {
-            await captureSignature(patient.id, "financialPolicy");
-            return captureSignature(patient.id, "treatmentConsent");
-          }, "Required signatures captured.")} disabled={!insuranceScan}>Capture mock signatures</StepButton>
+          <h3>3. Forms review</h3>
+          <p>Review your intake forms. Financial policy and treatment consent are signed with a staff member at check-in.</p>
+          <FormsReviewStep
+            patient={patient}
+            onUpdated={(updated) => { setPatient(updated); setMessage("Form updated."); }}
+            onSubmit={() => setSubmitted(true)}
+          />
         </div>
       </div>
 
       {message && <p className="notice">{message}</p>}
-      {patient.status === "ready_to_transfer" && (
-        <p className="notice success">Submit — I'll see you inside! A staff member will check you in.</p>
-      )}
       <button className="link-button" onClick={() => setPatient(null)}>Back to lookup</button>
     </section>
   );
@@ -231,6 +362,51 @@ function StatusBadges({ badges }) {
       <span className={`pill ${badges.formsStatus}`}>{badgeLabels.formsStatus[badges.formsStatus]}</span>
       <span className={`pill ${badges.insuranceStatus}`}>{badgeLabels.insuranceStatus[badges.insuranceStatus]}</span>
       {badges.needsAttention && <span className="pill attention">Needs attention</span>}
+    </div>
+  );
+}
+
+// Screen 5 (spec §4): staff-activated signature pad. Staff opens this from the
+// check-in panel and hands the device to the patient to sign.
+function StaffSignatureCapture({ patient, onSigned }) {
+  const canvasRef = useRef(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const nextForm = CONSENT_FORMS.find((f) => !patient.consentSignatures?.[f.key]);
+
+  async function sign() {
+    if (!nextForm) return;
+    setSaving(true);
+    setError("");
+    try {
+      const signatureDataUrl = getSignatureDataUrl(canvasRef);
+      if (!signatureDataUrl) {
+        setError("Please have the patient sign before continuing.");
+        return;
+      }
+      const pdfBase64 = generateConsentPdf({ formType: nextForm.key, patientName: patient.name, signatureDataUrl });
+      const updated = await captureSignature(patient.id, nextForm.key, pdfBase64);
+      canvasRef.current?.clear();
+      onSigned(updated);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!nextForm) {
+    return <p className="notice success">Both consent documents are signed.</p>;
+  }
+
+  return (
+    <div className="prompt-box">
+      <p><strong>Collect signature — {nextForm.label}</strong></p>
+      <p className="muted">Hand the device to the patient to sign.</p>
+      <SignaturePad ref={canvasRef} onClear={() => setError("")} />
+      <button onClick={sign} disabled={saving}>{saving ? "Saving..." : `Save ${nextForm.label} signature`}</button>
+      {error && <p className="notice">{error}</p>}
     </div>
   );
 }
@@ -265,12 +441,14 @@ function StaffDashboard() {
     try {
       const result = await action();
       setMessage(result.message || fallbackMessage);
-      if (result.patient) setSelected(result.patient);
+      if (result.patient) setSelected(await getPatient(result.patient.id));
       await load();
     } catch (error) {
       setMessage(error.blockers ? `${error.message} (${error.blockers.join(" ")})` : error.message);
     }
   }
+
+  const isActive = selected && !["checked_in", "no_show"].includes(selected.status);
 
   return (
     <div className="dashboard-grid">
@@ -297,7 +475,11 @@ function StaffDashboard() {
         {archive.length === 0 && <p className="muted">No archived no-shows yet.</p>}
         {archive.map((patient) => (
           <button className="row" key={patient.id} onClick={() => selectPatient(patient.id)}>
-            <span><strong>{patient.name}</strong><small>No PMS chart created</small></span>
+            <span>
+              <strong>{patient.name}</strong>
+              <small>{patient.appointmentType} · {new Date(patient.appointmentTime).toLocaleDateString()}</small>
+              <small>{patient.progress}% captured before no-show</small>
+            </span>
             <span>{patient.status}</span>
             <span>{patient.progress}%</span>
           </button>
@@ -319,18 +501,21 @@ function StaffDashboard() {
               <p className="notice">Previously collected on {new Date(selected.previouslyCollectedAt).toLocaleDateString()} — confirm or re-collect as needed.</p>
             )}
 
-            {selected.transferReadiness && !selected.transferReadiness.ready && (
+            {selected.kioskReadiness && !selected.kioskReadiness.ready && (
               <div className="prompt-box">
-                <p><strong>Still needed before PMS transfer:</strong></p>
+                <p><strong>Patient still completing kiosk steps:</strong></p>
                 <ul>
-                  {selected.transferReadiness.blockers.map((b) => <li key={b}>{b}</li>)}
+                  {selected.kioskReadiness.blockers.map((b) => <li key={b}>{b}</li>)}
                 </ul>
               </div>
             )}
 
             <div className="panels">
               <article>
-                <h3>ID scan {selected.kioskData.idScan?.needsStaffReview && <span className="pill attention">Low confidence — review</span>}</h3>
+                <h3>
+                  ID scan {selected.kioskData.idScan?.needsStaffReview && <span className="pill attention">Low confidence — review</span>}
+                  {selected.kioskData.idScan?.zipOutOfServiceArea && <span className="pill attention">ZIP out of service area</span>}
+                </h3>
                 <pre>{JSON.stringify(selected.kioskData.idScan, null, 2)}</pre>
                 <pre>{JSON.stringify(selected.kioskData.addressOverride, null, 2)}</pre>
               </article>
@@ -342,13 +527,40 @@ function StaffDashboard() {
                 <h3>DentVerify</h3>
                 <pre>{JSON.stringify(selected.dentverify, null, 2)}</pre>
               </article>
+              <article>
+                <h3>Consent forms</h3>
+                {CONSENT_FORMS.map(({ key, label }) => {
+                  const signature = selected.consentSignatures?.[key];
+                  return (
+                    <p key={key}>
+                      {label}:{" "}
+                      {signature
+                        ? <a href={`${API_BASE_URL}${signature.documentUrl}`} target="_blank" rel="noreferrer">View PDF</a>
+                        : "Not signed yet"}
+                    </p>
+                  );
+                })}
+              </article>
             </div>
+
+            {isActive && (
+              <div className="transfer-panel">
+                <h3>Consent signatures (collect at check-in)</h3>
+                {selected.kioskReadiness && !selected.kioskReadiness.ready ? (
+                  <p className="muted">Patient is still completing kiosk steps — collect signatures once those are done.</p>
+                ) : (
+                  <StaffSignatureCapture patient={selected} onSigned={(updated) => { setSelected(updated); load(); }} />
+                )}
+              </div>
+            )}
 
             <div className="action-row">
               <button onClick={() => staffAction(() => verifyInsurance(selected.id), "Insurance verified.")} disabled={!selected.kioskData.insuranceScan}>Re-verify insurance</button>
-              <button onClick={() => staffAction(() => checkInPatient(selected.id), "Checked in.")} disabled={selected.status === "checked_in" || selected.status === "no_show"}>Check In & Transfer to PMS</button>
-              <button className="danger" onClick={() => staffAction(() => markNoShow(selected.id), "Marked no-show.")} disabled={selected.status === "checked_in" || selected.status === "no_show"}>Mark no-show</button>
+              {isActive && <button className="secondary" onClick={() => staffAction(() => followUpPatient(selected.id), "Follow-up logged.")}>Follow Up</button>}
+              <button onClick={() => staffAction(() => checkInPatient(selected.id), "Checked in.")} disabled={!isActive}>Check In & Transfer to PMS</button>
+              <button className="danger" onClick={() => staffAction(() => markNoShow(selected.id), "Marked no-show.")} disabled={!isActive}>Mark no-show</button>
               {selected.status === "no_show" && <button onClick={() => staffAction(() => reactivatePatient(selected.id), "Reactivated.")}>Reactivate</button>}
+              {selected.status === "no_show" && <button className="secondary" onClick={() => staffAction(() => archivePatient(selected.id), "Record archived.")}>Archive</button>}
             </div>
           </>
         )}

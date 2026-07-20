@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -50,10 +50,10 @@ export function confirmAddress(patientId, payload) {
   return request(`/dentcomm/kiosk/${patientId}/address`, { method: "PATCH", body: JSON.stringify(payload) });
 }
 
-export function captureSignature(patientId, formType) {
+export function captureSignature(patientId, formType, pdfBase64) {
   return request(`/dentcomm/kiosk/${patientId}/signature`, {
     method: "POST",
-    body: JSON.stringify({ formType, signatureImageUrl: `${formType}-signature-demo` })
+    body: JSON.stringify({ formType, pdfBase64 })
   });
 }
 
@@ -74,4 +74,23 @@ export function markNoShow(patientId) {
 
 export function reactivatePatient(patientId) {
   return request(`/dentcomm/patients/${patientId}/reactivate`, { method: "POST" });
+}
+
+export function followUpPatient(patientId, note) {
+  return request(`/dentcomm/patients/${patientId}/follow-up`, {
+    method: "POST",
+    body: JSON.stringify({ note })
+  });
+}
+
+export function archivePatient(patientId) {
+  return request(`/dentcomm/patients/${patientId}/archive`, { method: "POST" });
+}
+
+export function completeForm(patientId, formType) {
+  return request(`/dentcomm/kiosk/${patientId}/forms/${formType}/complete`, { method: "POST" });
+}
+
+export function getSettings() {
+  return request("/dentcomm/settings");
 }

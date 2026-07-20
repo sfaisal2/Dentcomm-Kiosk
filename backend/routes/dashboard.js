@@ -47,7 +47,7 @@ router.get("/pre-arrival", (req, res) => {
 });
 
 router.get("/no-show-archive", (req, res) => {
-  res.json(patients.filter((patient) => patient.status === "no_show").map(withBadges));
+  res.json(patients.filter((patient) => patient.status === "no_show" && !patient.archived).map(withBadges));
 });
 
 module.exports = router;

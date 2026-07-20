@@ -11,3 +11,6 @@ backend/*.traineddata
 
 # Per-user Claude Code permission grants, not shared project config.
 .claude/settings.local.json
+
+# Signed consent PDFs written at runtime (stand-in for S3 in this prototype).
+backend/uploads/
