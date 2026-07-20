@@ -22,6 +22,7 @@ import {
   scanId,
   scanInsurance,
   submitInsuranceManually,
+  updateSettings,
   verifyInsurance
 } from "./lib/api";
 import "./styles.css";
@@ -411,6 +412,151 @@ function StaffSignatureCapture({ patient, onSigned }) {
   );
 }
 
+// Spec §5.3: "Identity confirmation: name and DOB match between ID scan and
+// booking record."
+function IdentityConfirmation({ patient }) {
+  const idScan = patient.kioskData?.idScan;
+  if (!idScan) return <p className="muted">Identity confirmation pending — no ID scan yet.</p>;
+
+  const nameMatch = (idScan.legalName || "").trim().toLowerCase() === patient.name.trim().toLowerCase();
+  const dobMatch = (idScan.dob || "") === patient.dob;
+
+  return (
+    <div className="identity-check">
+      <p>
+        Name: <strong>{idScan.legalName || "—"}</strong> vs booking <strong>{patient.name}</strong>{" "}
+        <span className={`pill ${nameMatch ? "complete" : "attention"}`}>{nameMatch ? "✓ Match" : "Mismatch — verify"}</span>
+      </p>
+      <p>
+        DOB: <strong>{idScan.dob || "—"}</strong> vs booking <strong>{patient.dob}</strong>{" "}
+        <span className={`pill ${dobMatch ? "complete" : "attention"}`}>{dobMatch ? "✓ Match" : "Mismatch — verify"}</span>
+      </p>
+    </div>
+  );
+}
+
+// Spec §5.3: "DentVerify benefits summary: annual maximum, deductible status,
+// coverage percentages."
+function BenefitsSummary({ dentverify }) {
+  const results = dentverify?.results;
+  if (!results) return <p className="muted">No DentVerify results yet ({dentverify?.status || "not started"}).</p>;
+
+  const coverage = results.coveragePercentages || {};
+  return (
+    <>
+      <ul className="benefits-summary">
+        <li><span>Annual maximum</span><strong>{results.annualMaximum || "—"}</strong></li>
+        <li><span>Deductible</span><strong>{results.deductibleStatus || "—"}</strong></li>
+        <li><span>Preventive</span><strong>{coverage.preventive || "—"}</strong></li>
+        <li><span>Basic</span><strong>{coverage.basic || "—"}</strong></li>
+        <li><span>Major</span><strong>{coverage.major || "—"}</strong></li>
+      </ul>
+      {results.badge && <span className="pill pending">{results.badge}</span>}
+      <details>
+        <summary className="muted">Raw verification record</summary>
+        <pre>{JSON.stringify(results, null, 2)}</pre>
+      </details>
+    </>
+  );
+}
+
+// Spec §5.3: "Complete list of what will be written to the PMS on transfer."
+function TransferManifest({ patient }) {
+  const idScan = patient.kioskData?.idScan;
+  const insurance = patient.kioskData?.insuranceScan;
+  const attachments = [idScan?.imageUrl, insurance?.frontImageUrl, insurance?.backImageUrl].filter(Boolean).length;
+  const signedForms = CONSENT_FORMS.filter((f) => patient.consentSignatures?.[f.key]).length;
+  const homeForms = HOME_FORMS.filter((f) => patient.forms?.[f.key]?.completed).length;
+
+  const items = [
+    { label: "Demographics (from ID scan)", included: !!idScan, note: patient.kioskData?.addressOverride ? "includes patient-provided address override" : null },
+    { label: "Insurance information", included: !!insurance, note: insurance?.entryMethod === "manual" ? "manual entry" : null },
+    { label: `Completed forms as PDFs (${homeForms}/${HOME_FORMS.length})`, included: homeForms > 0 },
+    { label: `Consent signatures (${signedForms}/${CONSENT_FORMS.length})`, included: signedForms > 0 },
+    { label: "DentVerify eligibility results", included: !!patient.dentverify?.results },
+    { label: `Original scan images (${attachments} attachments)`, included: attachments > 0 },
+    { label: "ID number", included: false, note: "stays in DentComm — never transferred (spec §6.1/§9.1)" }
+  ];
+
+  return (
+    <ul className="transfer-manifest">
+      {items.map(({ label, included, note }) => (
+        <li key={label}>
+          <span className={included ? "" : "muted"}>{included ? "✓" : "✕"} {label}</span>
+          {note && <small className="muted"> — {note}</small>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Spec §8: all kiosk settings are managed inside DentComm Settings — no
+// separate admin panel. Field list and defaults mirror the §8 table.
+const SETTINGS_FIELDS = [
+  { key: "noShowWindowHours", label: "No-show window (hours)", type: "number" },
+  { key: "addressPromptMonths", label: "Address prompt rule (ID older than N months)", type: "number" },
+  { key: "autoReminderPreVisitHours", label: "Auto-reminder pre-visit (hours before)", type: "number" },
+  { key: "autoReminderDayOfHours", label: "Auto-reminder day-of (hours before)", type: "number" },
+  { key: "dentVerifyAutoTrigger", label: "DentVerify auto-trigger", type: "boolean" },
+  { key: "ocrConfidenceThreshold", label: "OCR confidence threshold (%)", type: "number" },
+  { key: "consentTiming", label: "Consent timing", type: "text" },
+  { key: "archiveRetentionDays", label: "Archive retention (days)", type: "number" },
+  { key: "reVerificationWindowDays", label: "Re-verification window (days)", type: "number" },
+  { key: "kioskSessionTimeoutMinutes", label: "Kiosk session timeout (minutes)", type: "number" }
+];
+
+function SettingsPanel() {
+  const [values, setValues] = useState(null);
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getSettings().then(setValues).catch((e) => setMessage(e.message));
+  }, []);
+
+  function setField(key, raw, type) {
+    setValues((v) => ({ ...v, [key]: type === "number" ? Number(raw) : raw }));
+  }
+
+  async function save() {
+    setSaving(true);
+    setMessage("");
+    try {
+      const updates = {};
+      for (const { key } of SETTINGS_FIELDS) updates[key] = values[key];
+      setValues(await updateSettings(updates));
+      setMessage("Settings saved.");
+    } catch (e) {
+      setMessage(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!values) return <section className="card kiosk-card"><p className="muted">{message || "Loading settings..."}</p></section>;
+
+  return (
+    <section className="card kiosk-card">
+      <p className="eyebrow">DentComm Settings</p>
+      <h2>Kiosk configuration</h2>
+      <div className="settings-grid">
+        {SETTINGS_FIELDS.map(({ key, label, type }) => (
+          <label key={key} className="muted">
+            {label}
+            {type === "boolean" ? (
+              <input type="checkbox" checked={!!values[key]} onChange={(e) => setField(key, e.target.checked, type)} />
+            ) : (
+              <input type={type} value={values[key] ?? ""} onChange={(e) => setField(key, e.target.value, type)} />
+            )}
+          </label>
+        ))}
+      </div>
+      <button onClick={save} disabled={saving}>{saving ? "Saving..." : "Save settings"}</button>
+      {message && <p className="notice">{message}</p>}
+    </section>
+  );
+}
+
 function StaffDashboard() {
   const [patients, setPatients] = useState([]);
   const [archive, setArchive] = useState([]);
@@ -463,26 +609,55 @@ function StaffDashboard() {
 
         <div className="table">
           {patients.map((patient) => (
-            <button className="row" key={patient.id} onClick={() => selectPatient(patient.id)}>
-              <span><strong>{patient.name}</strong><small>{patient.appointmentType}</small><StatusBadges badges={patient.badges} /></span>
+            <div className="row" key={patient.id}>
+              <span>
+                <strong>{patient.name}</strong>
+                <small>{new Date(patient.appointmentTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · {patient.appointmentType}</small>
+                <StatusBadges badges={patient.badges} />
+              </span>
               <span>{patient.status}</span>
               <span>{patient.progress}%</span>
-            </button>
+              {/* Spec §5.1: quick actions — Review, Verify, Follow Up, Check In */}
+              <span className="row-actions">
+                <button className="secondary small" onClick={() => selectPatient(patient.id)}>Review</button>
+                <button
+                  className="secondary small"
+                  disabled={!patient.kioskData?.insuranceScan}
+                  onClick={() => staffAction(() => verifyInsurance(patient.id), "Insurance verified.")}
+                >
+                  Verify
+                </button>
+                <button className="secondary small" onClick={() => staffAction(() => followUpPatient(patient.id), "Follow-up logged.")}>Follow Up</button>
+                <button
+                  className="small"
+                  disabled={!patient.transferReadiness?.ready}
+                  onClick={() => staffAction(() => checkInPatient(patient.id), "Checked in.")}
+                >
+                  Check In
+                </button>
+              </span>
+            </div>
           ))}
         </div>
 
         <h3>No-show archive</h3>
         {archive.length === 0 && <p className="muted">No archived no-shows yet.</p>}
         {archive.map((patient) => (
-          <button className="row" key={patient.id} onClick={() => selectPatient(patient.id)}>
+          <div className="row" key={patient.id}>
             <span>
               <strong>{patient.name}</strong>
               <small>{patient.appointmentType} · {new Date(patient.appointmentTime).toLocaleDateString()}</small>
-              <small>{patient.progress}% captured before no-show</small>
+              <small>{patient.progress}% captured before no-show · DentVerify: {patient.dentverify?.status?.replace(/_/g, " ") || "not started"}</small>
             </span>
             <span>{patient.status}</span>
             <span>{patient.progress}%</span>
-          </button>
+            {/* Spec §5.4 actions: Reschedule (reactivate) / Archive */}
+            <span className="row-actions">
+              <button className="secondary small" onClick={() => selectPatient(patient.id)}>Review</button>
+              <button className="small" onClick={() => staffAction(() => reactivatePatient(patient.id), "Reactivated.")}>Reschedule</button>
+              <button className="secondary small" onClick={() => staffAction(() => archivePatient(patient.id), "Record archived.")}>Archive</button>
+            </span>
+          </div>
         ))}
       </section>
 
@@ -524,8 +699,16 @@ function StaffDashboard() {
                 <pre>{JSON.stringify(selected.kioskData.insuranceScan, null, 2)}</pre>
               </article>
               <article>
-                <h3>DentVerify</h3>
-                <pre>{JSON.stringify(selected.dentverify, null, 2)}</pre>
+                <h3>DentVerify benefits</h3>
+                <BenefitsSummary dentverify={selected.dentverify} />
+              </article>
+              <article>
+                <h3>PMS status</h3>
+                <p>
+                  {selected.pmsPatientId
+                    ? <>Chart created — PMS ID <strong>{selected.pmsPatientId}</strong></>
+                    : <span className="muted">Pending — chart will be created on arrival.</span>}
+                </p>
               </article>
               <article>
                 <h3>Consent forms</h3>
@@ -545,6 +728,11 @@ function StaffDashboard() {
 
             {isActive && (
               <div className="transfer-panel">
+                <h3>Arrival & Transfer Panel</h3>
+                <h4>Identity confirmation</h4>
+                <IdentityConfirmation patient={selected} />
+                <h4>Will be written to PMS on transfer</h4>
+                <TransferManifest patient={selected} />
                 <h3>Consent signatures (collect at check-in)</h3>
                 {selected.kioskReadiness && !selected.kioskReadiness.ready ? (
                   <p className="muted">Patient is still completing kiosk steps — collect signatures once those are done.</p>
@@ -583,10 +771,11 @@ export default function App() {
         <div className="nav-actions">
           <button className={view === "kiosk" ? "active" : "secondary"} onClick={() => setView("kiosk")}>Kiosk</button>
           <button className={view === "staff" ? "active" : "secondary"} onClick={() => setView("staff")}>Staff dashboard</button>
+          <button className={view === "settings" ? "active" : "secondary"} onClick={() => setView("settings")}>Settings</button>
         </div>
       </nav>
 
-      {view === "kiosk" ? <KioskFlow /> : <StaffDashboard />}
+      {view === "kiosk" ? <KioskFlow /> : view === "settings" ? <SettingsPanel /> : <StaffDashboard />}
     </main>
   );
 }

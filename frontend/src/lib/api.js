@@ -94,3 +94,7 @@ export function completeForm(patientId, formType) {
 export function getSettings() {
   return request("/dentcomm/settings");
 }
+
+export function updateSettings(updates) {
+  return request("/dentcomm/settings", { method: "PATCH", body: JSON.stringify(updates) });
+}

@@ -81,6 +81,16 @@ async function verifyInsurance(patient) {
 
   return {
     verificationId: `DV-${Date.now()}`,
+    // Spec §7.2 patient identifier block — exact field names from the BRD.
+    // pms_patient_id stays null until check-in; attachToPmsChart fills it.
+    identifier: {
+      patient_identifier_type: "dentcomm_pre_arrival",
+      dentcomm_record_id: patient.id,
+      patient_name: patient.kioskData.idScan?.legalName || patient.name,
+      patient_dob: patient.dob,
+      verification_context: "new_patient_kiosk",
+      pms_patient_id: patient.pmsPatientId || null
+    },
     patientIdentifierType: "dentcomm_pre_arrival",
     dentcommRecordId: patient.id,
     pmsPatientId: patient.pmsPatientId || null,

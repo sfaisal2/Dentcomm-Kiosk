@@ -38,9 +38,25 @@ function withBadges(patient) {
   };
 }
 
+// Spec §10.2: GET /dentcomm/dashboard/pre-arrival?date=today. Accepts
+// "today", a YYYY-MM-DD date, or "all" to skip date filtering entirely.
+// Spec §5.1 scopes the inbox to "the current day", so today is the default.
+function matchesDate(patient, dateParam) {
+  if (dateParam === "all") return true;
+  const target = !dateParam || dateParam === "today" ? new Date() : new Date(`${dateParam}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return true;
+  const appt = new Date(patient.appointmentTime);
+  return (
+    appt.getFullYear() === target.getFullYear() &&
+    appt.getMonth() === target.getMonth() &&
+    appt.getDate() === target.getDate()
+  );
+}
+
 router.get("/pre-arrival", (req, res) => {
   const preArrivalPatients = patients
     .filter((patient) => ["pre_arrival", "kiosk_in_progress", "ready_to_transfer", "reactivated"].includes(patient.status))
+    .filter((patient) => matchesDate(patient, req.query.date))
     .map(withBadges);
 
   res.json(preArrivalPatients);

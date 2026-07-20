@@ -84,6 +84,16 @@ router.post("/:id/checkin", async (req, res) => {
 
   const pmsChart = await createFullPmsChart(patient);
   patient.pmsPatientId = pmsChart.pmsPatientId;
+
+  // Spec §7.3: on PMS transfer the DentVerify record is updated with the new
+  // PMS patient ID so results auto-attach to the chart.
+  if (patient.dentverify?.results) {
+    patient.dentverify.results.pmsPatientId = pmsChart.pmsPatientId;
+    if (patient.dentverify.results.identifier) {
+      patient.dentverify.results.identifier.pms_patient_id = pmsChart.pmsPatientId;
+    }
+  }
+
   patient.status = "checked_in";
   calculateProgress(patient);
   patient.updatedAt = new Date().toISOString();
