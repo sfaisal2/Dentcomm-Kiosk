@@ -17,7 +17,8 @@ async function createLightweightAppointment(patient) {
 
 async function createFullPmsChart(patient) {
   const { firstName, lastName } = splitName(patient.name);
-  const idScan = patient.kioskData.idScan || {};
+  const state = patient.preArrivalState;
+  const idScan = state.idScan || {};
 
   // Real PMS patient-write DTOs use firstName/lastName/mobilePhone/
   // addressLine1, not our internal kiosk field names — and, per spec §9.1,
@@ -28,7 +29,7 @@ async function createFullPmsChart(patient) {
     dob: patient.dob,
     mobilePhone: patient.phone,
     email: patient.email || null,
-    addressLine1: patient.kioskData.addressOverride?.updatedAddress || idScan.address || null
+    addressLine1: state.addressOverride?.updatedAddress || idScan.address || null
   };
 
   // OCR provenance kept separately from the normalized demographics above —
@@ -44,16 +45,16 @@ async function createFullPmsChart(patient) {
   };
 
   // Spec §6.3: original scanned images travel to the PMS chart as attachments.
-  const insuranceScan = patient.kioskData.insuranceScan || {};
+  const insuranceScan = state.insuranceScan || {};
   const imageAttachments = [
     { kind: "government_id", url: idScan.imageUrl },
     { kind: "insurance_card_front", url: insuranceScan.frontImageUrl },
     { kind: "insurance_card_back", url: insuranceScan.backImageUrl },
-    ...(patient.consentSignatures?.financialPolicy
-      ? [{ kind: "financial_policy_signed", url: patient.consentSignatures.financialPolicy.documentUrl }]
+    ...(state.consentSignatures?.financialPolicy
+      ? [{ kind: "financial_policy_signed", url: state.consentSignatures.financialPolicy.documentUrl }]
       : []),
-    ...(patient.consentSignatures?.treatmentConsent
-      ? [{ kind: "treatment_consent_signed", url: patient.consentSignatures.treatmentConsent.documentUrl }]
+    ...(state.consentSignatures?.treatmentConsent
+      ? [{ kind: "treatment_consent_signed", url: state.consentSignatures.treatmentConsent.documentUrl }]
       : [])
   ].filter((a) => a.url);
 
@@ -63,11 +64,11 @@ async function createFullPmsChart(patient) {
     transferredData: {
       demographics,
       identityVerification,
-      addressOverride: patient.kioskData.addressOverride,
-      insurance: patient.kioskData.insuranceScan,
-      forms: patient.forms,
-      consentSignatures: patient.consentSignatures,
-      dentverifyResults: patient.dentverify.results,
+      addressOverride: state.addressOverride,
+      insurance: state.insuranceScan,
+      forms: state.forms,
+      consentSignatures: state.consentSignatures,
+      dentverifyResults: state.dentverify.results,
       imageAttachments
     }
   };

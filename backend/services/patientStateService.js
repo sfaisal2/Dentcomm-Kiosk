@@ -27,7 +27,7 @@ function updatePatientStatus(patient, nextStatus) {
 }
 
 function homeFormsComplete(patient) {
-  return HOME_FORMS.every((form) => patient.forms?.[form]?.completed);
+  return HOME_FORMS.every((form) => patient.preArrivalState.forms?.[form]?.completed);
 }
 
 // Spec §2.2 ready_to_transfer: "All required kiosk steps complete. Insurance
@@ -36,13 +36,14 @@ function homeFormsComplete(patient) {
 // gate the patient reaching ready_to_transfer.
 function getKioskReadiness(patient) {
   const blockers = [];
+  const state = patient.preArrivalState;
 
-  if (!patient.kioskData?.idScan) blockers.push("Government ID scan not completed.");
-  if (patient.kioskData?.idScan?.needsAddressConfirmation && !patient.kioskData?.addressOverride) {
+  if (!state.idScan) blockers.push("Government ID scan not completed.");
+  if (state.idScan?.needsAddressConfirmation && !state.addressOverride) {
     blockers.push("Address confirmation is still pending.");
   }
-  if (!patient.kioskData?.insuranceScan) blockers.push("Insurance card scan not completed.");
-  if (!["verified", "previously_verified"].includes(patient.dentverify?.status)) {
+  if (!state.insuranceScan) blockers.push("Insurance card scan not completed.");
+  if (!["verified", "previously_verified"].includes(state.dentverify?.status)) {
     blockers.push("DentVerify eligibility check not complete.");
   }
   if (!homeFormsComplete(patient)) blockers.push("Pre-visit forms not complete.");
@@ -54,9 +55,10 @@ function getKioskReadiness(patient) {
 // PLUS the two consent signatures staff collect at arrival (spec §3 Step 6).
 function getTransferReadiness(patient) {
   const { blockers } = getKioskReadiness(patient);
+  const signatures = patient.preArrivalState.consentSignatures;
 
-  if (!patient.consentSignatures?.financialPolicy) blockers.push("Financial policy signature not collected.");
-  if (!patient.consentSignatures?.treatmentConsent) blockers.push("Treatment consent signature not collected.");
+  if (!signatures?.financialPolicy) blockers.push("Financial policy signature not collected.");
+  if (!signatures?.treatmentConsent) blockers.push("Treatment consent signature not collected.");
 
   return { ready: blockers.length === 0, blockers };
 }
@@ -66,7 +68,7 @@ function getTransferReadiness(patient) {
 function syncStatus(patient) {
   if (["checked_in", "no_show"].includes(patient.status)) return patient.status;
 
-  if (patient.kioskData?.idScan && ["pre_arrival", "reactivated"].includes(patient.status)) {
+  if (patient.preArrivalState.idScan && ["pre_arrival", "reactivated"].includes(patient.status)) {
     patient.status = "kiosk_in_progress";
   }
 
@@ -86,10 +88,11 @@ function isPastNoShowWindow(patient, settings) {
 }
 
 function calculateProgress(patient) {
+  const state = patient.preArrivalState;
   let progress = 10;
-  if (patient.kioskData?.idScan) progress = Math.max(progress, 35);
-  if (patient.kioskData?.insuranceScan) progress = Math.max(progress, 55);
-  if (["verified", "previously_verified"].includes(patient.dentverify?.status)) progress = Math.max(progress, 75);
+  if (state.idScan) progress = Math.max(progress, 35);
+  if (state.insuranceScan) progress = Math.max(progress, 55);
+  if (["verified", "previously_verified"].includes(state.dentverify?.status)) progress = Math.max(progress, 75);
   if (homeFormsComplete(patient)) progress = Math.max(progress, 90);
   if (patient.status === "ready_to_transfer" || patient.status === "checked_in") progress = 100;
   if (patient.status === "no_show") progress = patient.progress ?? progress;

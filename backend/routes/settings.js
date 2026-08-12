@@ -1,11 +1,15 @@
 const express = require("express");
 const settings = require("../config/settings");
+const { requireStaffAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
 // Spec §8: kiosk behavior is configured in DentComm Settings. The kiosk
 // device reads the values it needs (e.g. idle timeout) from here rather than
 // hardcoding them, so a settings change takes effect without a rebuild.
+// Left unauthenticated (unlike every other route) because the kiosk needs
+// these values — notably kioskSessionTimeoutMinutes — before it has
+// established a session at all; none of it is PHI.
 router.get("/", (req, res) => {
   res.json(settings);
 });
@@ -25,7 +29,7 @@ const EDITABLE_SETTINGS = {
   kioskSessionTimeoutMinutes: "number"
 };
 
-router.patch("/", (req, res) => {
+router.patch("/", requireStaffAuth, (req, res) => {
   const updates = req.body || {};
   const errors = [];
 

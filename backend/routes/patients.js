@@ -9,9 +9,16 @@ const {
   getTransferReadiness,
   syncStatus
 } = require("../services/patientStateService");
+const { DEFAULT_CLINIC_ID, requireStaffAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
+// Booking flow (Voice AI / live agent, spec §3 Step 1) creates the
+// pre-arrival record before the patient ever reaches the kiosk or a staff
+// member. In the real system this would carry its own service-to-service
+// credential (the demo repo's api-key-authentication.md documents exactly
+// this pattern — a scoped API key per integration) rather than the staff
+// token, so it's deliberately left unguarded here.
 router.post("/pre-arrival", async (req, res) => {
   const requiredFields = ["name", "dob", "phone", "appointmentTime"];
   const missingFields = requiredFields.filter((field) => !req.body[field]);
@@ -22,6 +29,7 @@ router.post("/pre-arrival", async (req, res) => {
 
   const newPatient = {
     id: `DC-${Date.now()}`,
+    clinicId: req.body.clinicId || DEFAULT_CLINIC_ID,
     name: req.body.name,
     dob: req.body.dob,
     phone: req.body.phone,
@@ -33,10 +41,17 @@ router.post("/pre-arrival", async (req, res) => {
     status: "pre_arrival",
     pmsAppointmentId: null,
     pmsPatientId: null,
-    kioskData: { idScan: null, insuranceScan: null, addressOverride: null },
-    forms: req.body.forms || {},
-    dentverify: { status: "not_started", results: null },
-    consentSignatures: { financialPolicy: null, treatmentConsent: null },
+    preArrivalState: {
+      idScan: null,
+      insuranceScan: null,
+      addressOverride: null,
+      idScanAttempts: 0,
+      offerStaffAssist: false,
+      forms: req.body.forms || {},
+      dentverify: { status: "not_started", results: null },
+      consentSignatures: { financialPolicy: null, treatmentConsent: null },
+      followUps: []
+    },
     progress: 10,
     noShowAt: null,
     previouslyCollectedAt: null,
@@ -51,8 +66,8 @@ router.post("/pre-arrival", async (req, res) => {
   res.status(201).json({ patient: newPatient, appointment });
 });
 
-router.get("/:id", (req, res) => {
-  const patient = patients.find((p) => p.id === req.params.id);
+router.get("/:id", requireStaffAuth, (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id && p.clinicId === req.clinicId);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
   calculateProgress(patient);
   res.json({
@@ -62,19 +77,19 @@ router.get("/:id", (req, res) => {
   });
 });
 
-router.patch("/:id/kiosk-data", (req, res) => {
-  const patient = patients.find((p) => p.id === req.params.id);
+router.patch("/:id/kiosk-data", requireStaffAuth, (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id && p.clinicId === req.clinicId);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
-  patient.kioskData = { ...patient.kioskData, ...req.body };
+  Object.assign(patient.preArrivalState, req.body);
   syncStatus(patient);
   calculateProgress(patient);
   patient.updatedAt = new Date().toISOString();
   res.json(patient);
 });
 
-router.post("/:id/checkin", async (req, res) => {
-  const patient = patients.find((p) => p.id === req.params.id);
+router.post("/:id/checkin", requireStaffAuth, async (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id && p.clinicId === req.clinicId);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   const { ready, blockers } = getTransferReadiness(patient);
@@ -87,10 +102,11 @@ router.post("/:id/checkin", async (req, res) => {
 
   // Spec §7.3: on PMS transfer the DentVerify record is updated with the new
   // PMS patient ID so results auto-attach to the chart.
-  if (patient.dentverify?.results) {
-    patient.dentverify.results.pmsPatientId = pmsChart.pmsPatientId;
-    if (patient.dentverify.results.identifier) {
-      patient.dentverify.results.identifier.pms_patient_id = pmsChart.pmsPatientId;
+  const dentverify = patient.preArrivalState.dentverify;
+  if (dentverify?.results) {
+    dentverify.results.pmsPatientId = pmsChart.pmsPatientId;
+    if (dentverify.results.identifier) {
+      dentverify.results.identifier.pms_patient_id = pmsChart.pmsPatientId;
     }
   }
 
@@ -101,8 +117,8 @@ router.post("/:id/checkin", async (req, res) => {
   res.json({ message: "Patient checked in and transferred to PMS.", patient, pmsChart });
 });
 
-router.patch("/:id/status/no-show", async (req, res) => {
-  const patient = patients.find((p) => p.id === req.params.id);
+router.patch("/:id/status/no-show", requireStaffAuth, async (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id && p.clinicId === req.clinicId);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   await markAppointmentNoShow(patient);
@@ -116,11 +132,12 @@ router.patch("/:id/status/no-show", async (req, res) => {
   res.json({ message: "Patient marked as no-show. No PMS chart was created.", patient });
 });
 
-router.post("/:id/reactivate", (req, res) => {
-  const patient = patients.find((p) => p.id === req.params.id);
+router.post("/:id/reactivate", requireStaffAuth, (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id && p.clinicId === req.clinicId);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   const collectedOn = patient.updatedAt;
+  const dentverify = patient.preArrivalState.dentverify;
 
   // Spec §7.3 / §9.2: reuse a still-fresh DentVerify result instead of a
   // redundant re-check; anything older than the window needs re-verifying.
@@ -128,10 +145,10 @@ router.post("/:id/reactivate", (req, res) => {
     ? (Date.now() - new Date(patient.noShowAt).getTime()) / (1000 * 60 * 60 * 24)
     : Infinity;
 
-  if (patient.dentverify.status === "verified" && daysSinceNoShow <= settings.reVerificationWindowDays) {
-    patient.dentverify.status = "previously_verified";
-  } else if (patient.dentverify.results) {
-    patient.dentverify.status = "requires_reverification";
+  if (dentverify.status === "verified" && daysSinceNoShow <= settings.reVerificationWindowDays) {
+    dentverify.status = "previously_verified";
+  } else if (dentverify.results) {
+    dentverify.status = "requires_reverification";
   }
 
   try {
@@ -150,13 +167,13 @@ router.post("/:id/reactivate", (req, res) => {
 
 // Spec §5.1 quick action: log a follow-up contact attempt (CRM touch) without
 // changing the patient's kiosk state.
-router.post("/:id/follow-up", (req, res) => {
-  const patient = patients.find((p) => p.id === req.params.id);
+router.post("/:id/follow-up", requireStaffAuth, (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id && p.clinicId === req.clinicId);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   const entry = { note: (req.body && req.body.note) || "Follow-up logged", at: new Date().toISOString() };
-  patient.followUps = patient.followUps || [];
-  patient.followUps.push(entry);
+  patient.preArrivalState.followUps = patient.preArrivalState.followUps || [];
+  patient.preArrivalState.followUps.push(entry);
   patient.updatedAt = new Date().toISOString();
 
   res.json({ message: "Follow-up logged.", patient });
@@ -165,8 +182,8 @@ router.post("/:id/follow-up", (req, res) => {
 // Spec §5.4: "Archive (marks the record as inactive after configurable
 // retention period)." Only a no-show record can be archived; it then drops
 // off the active no-show list.
-router.post("/:id/archive", (req, res) => {
-  const patient = patients.find((p) => p.id === req.params.id);
+router.post("/:id/archive", requireStaffAuth, (req, res) => {
+  const patient = patients.find((p) => p.id === req.params.id && p.clinicId === req.clinicId);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
   if (patient.status !== "no_show") {
     return res.status(400).json({ error: "Only a no-show record can be archived." });

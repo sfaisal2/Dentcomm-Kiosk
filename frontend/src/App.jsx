@@ -21,6 +21,7 @@ import {
   reactivatePatient,
   scanId,
   scanInsurance,
+  startKioskSession,
   submitInsuranceManually,
   updateSettings,
   verifyInsurance
@@ -65,7 +66,7 @@ function IdScanStep({ patient, onScanned }) {
     <div className="scan-controls">
       <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files[0] || null)} />
       <StepButton onClick={runScan} disabled={!file || loading}>{loading ? "Reading ID with OCR..." : "Scan ID"}</StepButton>
-      {patient.kioskData?.offerStaffAssist && (
+      {patient.preArrivalState?.offerStaffAssist && (
         <p className="notice">We're having trouble reading your ID. Please ask a staff member to assist.</p>
       )}
       {error && <p className="notice">{error}</p>}
@@ -127,7 +128,7 @@ function AddressConfirmPrompt({ patient, onUpdated }) {
   return (
     <div className="prompt-box">
       <p><strong>Is this still your current address?</strong></p>
-      <p className="muted">{patient.kioskData.idScan.address}</p>
+      <p className="muted">{patient.preArrivalState.idScan.address}</p>
       {!editing ? (
         <div className="action-row">
           <button onClick={confirm}>Yes, that's correct</button>
@@ -181,13 +182,13 @@ function FormsReviewStep({ patient, onUpdated, onSubmit }) {
     }
   }
 
-  const allHomeComplete = HOME_FORMS.every((f) => patient.forms?.[f.key]?.completed);
+  const allHomeComplete = HOME_FORMS.every((f) => patient.preArrivalState.forms?.[f.key]?.completed);
 
   return (
     <div className="forms-review">
       <ul className="forms-list">
         {HOME_FORMS.map(({ key, label }) => {
-          const form = patient.forms?.[key];
+          const form = patient.preArrivalState.forms?.[key];
           return (
             <li key={key}>
               <span>{label}</span>
@@ -233,6 +234,7 @@ function KioskFlow() {
   const [showManualInsurance, setShowManualInsurance] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [timedOut, setTimedOut] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
   const timerRef = useRef(null);
   const timeoutMsRef = useRef(3 * 60 * 1000);
 
@@ -244,6 +246,19 @@ function KioskFlow() {
       })
       .catch(() => {});
   }, []);
+
+  // Spec §2.1: the kiosk device authenticates as a scoped kiosk session, not
+  // a staff session. A fresh session is established whenever the device is
+  // sitting at the welcome/lookup screen — including after the idle timeout
+  // locks it back there — so a stale session never carries over to the next
+  // patient.
+  useEffect(() => {
+    if (patient) return;
+    setSessionReady(false);
+    startKioskSession()
+      .then(() => setSessionReady(true))
+      .catch((e) => setMessage(e.message));
+  }, [patient]);
 
   // Auto-lock to the welcome screen after inactivity (spec §8/§9.1) so no PHI
   // stays on screen for the next person.
@@ -286,14 +301,18 @@ function KioskFlow() {
         {timedOut && (
           <p className="notice session-banner">Your session timed out for privacy. Please look up your appointment again.</p>
         )}
-        <PatientLookup onFound={startSession} />
+        {sessionReady ? (
+          <PatientLookup onFound={startSession} />
+        ) : (
+          <p className="muted session-banner">{message || "Connecting to DentComm..."}</p>
+        )}
       </>
     );
   }
 
-  const idScan = patient.kioskData?.idScan;
-  const insuranceScan = patient.kioskData?.insuranceScan;
-  const addressPending = idScan?.needsAddressConfirmation && !patient.kioskData?.addressOverride;
+  const idScan = patient.preArrivalState?.idScan;
+  const insuranceScan = patient.preArrivalState?.insuranceScan;
+  const addressPending = idScan?.needsAddressConfirmation && !patient.preArrivalState?.addressOverride;
 
   return (
     <section className="card kiosk-card">
@@ -329,7 +348,7 @@ function KioskFlow() {
             <InsuranceManualEntry patient={patient} onSubmitted={(updated) => { setPatient(updated); setMessage("Insurance details saved."); setShowManualInsurance(false); }} />
           )}
 
-          {insuranceScan && patient.dentverify.status === "pending" && (
+          {insuranceScan && patient.preArrivalState.dentverify.status === "pending" && (
             <p className="notice">We are checking your insurance benefits in the background — no action needed.</p>
           )}
         </div>
@@ -374,7 +393,7 @@ function StaffSignatureCapture({ patient, onSigned }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const nextForm = CONSENT_FORMS.find((f) => !patient.consentSignatures?.[f.key]);
+  const nextForm = CONSENT_FORMS.find((f) => !patient.preArrivalState.consentSignatures?.[f.key]);
 
   async function sign() {
     if (!nextForm) return;
@@ -415,7 +434,7 @@ function StaffSignatureCapture({ patient, onSigned }) {
 // Spec §5.3: "Identity confirmation: name and DOB match between ID scan and
 // booking record."
 function IdentityConfirmation({ patient }) {
-  const idScan = patient.kioskData?.idScan;
+  const idScan = patient.preArrivalState?.idScan;
   if (!idScan) return <p className="muted">Identity confirmation pending — no ID scan yet.</p>;
 
   const nameMatch = (idScan.legalName || "").trim().toLowerCase() === patient.name.trim().toLowerCase();
@@ -462,18 +481,18 @@ function BenefitsSummary({ dentverify }) {
 
 // Spec §5.3: "Complete list of what will be written to the PMS on transfer."
 function TransferManifest({ patient }) {
-  const idScan = patient.kioskData?.idScan;
-  const insurance = patient.kioskData?.insuranceScan;
+  const idScan = patient.preArrivalState?.idScan;
+  const insurance = patient.preArrivalState?.insuranceScan;
   const attachments = [idScan?.imageUrl, insurance?.frontImageUrl, insurance?.backImageUrl].filter(Boolean).length;
-  const signedForms = CONSENT_FORMS.filter((f) => patient.consentSignatures?.[f.key]).length;
-  const homeForms = HOME_FORMS.filter((f) => patient.forms?.[f.key]?.completed).length;
+  const signedForms = CONSENT_FORMS.filter((f) => patient.preArrivalState.consentSignatures?.[f.key]).length;
+  const homeForms = HOME_FORMS.filter((f) => patient.preArrivalState.forms?.[f.key]?.completed).length;
 
   const items = [
-    { label: "Demographics (from ID scan)", included: !!idScan, note: patient.kioskData?.addressOverride ? "includes patient-provided address override" : null },
+    { label: "Demographics (from ID scan)", included: !!idScan, note: patient.preArrivalState?.addressOverride ? "includes patient-provided address override" : null },
     { label: "Insurance information", included: !!insurance, note: insurance?.entryMethod === "manual" ? "manual entry" : null },
     { label: `Completed forms as PDFs (${homeForms}/${HOME_FORMS.length})`, included: homeForms > 0 },
     { label: `Consent signatures (${signedForms}/${CONSENT_FORMS.length})`, included: signedForms > 0 },
-    { label: "DentVerify eligibility results", included: !!patient.dentverify?.results },
+    { label: "DentVerify eligibility results", included: !!patient.preArrivalState.dentverify?.results },
     { label: `Original scan images (${attachments} attachments)`, included: attachments > 0 },
     { label: "ID number", included: false, note: "stays in DentComm — never transferred (spec §6.1/§9.1)" }
   ];
@@ -622,7 +641,7 @@ function StaffDashboard() {
                 <button className="secondary small" onClick={() => selectPatient(patient.id)}>Review</button>
                 <button
                   className="secondary small"
-                  disabled={!patient.kioskData?.insuranceScan}
+                  disabled={!patient.preArrivalState?.insuranceScan}
                   onClick={() => staffAction(() => verifyInsurance(patient.id), "Insurance verified.")}
                 >
                   Verify
@@ -647,7 +666,7 @@ function StaffDashboard() {
             <span>
               <strong>{patient.name}</strong>
               <small>{patient.appointmentType} · {new Date(patient.appointmentTime).toLocaleDateString()}</small>
-              <small>{patient.progress}% captured before no-show · DentVerify: {patient.dentverify?.status?.replace(/_/g, " ") || "not started"}</small>
+              <small>{patient.progress}% captured before no-show · DentVerify: {patient.preArrivalState.dentverify?.status?.replace(/_/g, " ") || "not started"}</small>
             </span>
             <span>{patient.status}</span>
             <span>{patient.progress}%</span>
@@ -688,19 +707,19 @@ function StaffDashboard() {
             <div className="panels">
               <article>
                 <h3>
-                  ID scan {selected.kioskData.idScan?.needsStaffReview && <span className="pill attention">Low confidence — review</span>}
-                  {selected.kioskData.idScan?.zipOutOfServiceArea && <span className="pill attention">ZIP out of service area</span>}
+                  ID scan {selected.preArrivalState.idScan?.needsStaffReview && <span className="pill attention">Low confidence — review</span>}
+                  {selected.preArrivalState.idScan?.zipOutOfServiceArea && <span className="pill attention">ZIP out of service area</span>}
                 </h3>
-                <pre>{JSON.stringify(selected.kioskData.idScan, null, 2)}</pre>
-                <pre>{JSON.stringify(selected.kioskData.addressOverride, null, 2)}</pre>
+                <pre>{JSON.stringify(selected.preArrivalState.idScan, null, 2)}</pre>
+                <pre>{JSON.stringify(selected.preArrivalState.addressOverride, null, 2)}</pre>
               </article>
               <article>
-                <h3>Insurance {selected.kioskData.insuranceScan?.entryMethod === "manual" && <span className="pill attention">Manual entry</span>}</h3>
-                <pre>{JSON.stringify(selected.kioskData.insuranceScan, null, 2)}</pre>
+                <h3>Insurance {selected.preArrivalState.insuranceScan?.entryMethod === "manual" && <span className="pill attention">Manual entry</span>}</h3>
+                <pre>{JSON.stringify(selected.preArrivalState.insuranceScan, null, 2)}</pre>
               </article>
               <article>
                 <h3>DentVerify benefits</h3>
-                <BenefitsSummary dentverify={selected.dentverify} />
+                <BenefitsSummary dentverify={selected.preArrivalState.dentverify} />
               </article>
               <article>
                 <h3>PMS status</h3>
@@ -713,7 +732,7 @@ function StaffDashboard() {
               <article>
                 <h3>Consent forms</h3>
                 {CONSENT_FORMS.map(({ key, label }) => {
-                  const signature = selected.consentSignatures?.[key];
+                  const signature = selected.preArrivalState.consentSignatures?.[key];
                   return (
                     <p key={key}>
                       {label}:{" "}
@@ -743,7 +762,7 @@ function StaffDashboard() {
             )}
 
             <div className="action-row">
-              <button onClick={() => staffAction(() => verifyInsurance(selected.id), "Insurance verified.")} disabled={!selected.kioskData.insuranceScan}>Re-verify insurance</button>
+              <button onClick={() => staffAction(() => verifyInsurance(selected.id), "Insurance verified.")} disabled={!selected.preArrivalState.insuranceScan}>Re-verify insurance</button>
               {isActive && <button className="secondary" onClick={() => staffAction(() => followUpPatient(selected.id), "Follow-up logged.")}>Follow Up</button>}
               <button onClick={() => staffAction(() => checkInPatient(selected.id), "Checked in.")} disabled={!isActive}>Check In & Transfer to PMS</button>
               <button className="danger" onClick={() => staffAction(() => markNoShow(selected.id), "Marked no-show.")} disabled={!isActive}>Mark no-show</button>

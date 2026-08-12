@@ -7,6 +7,7 @@ const kioskRoutes = require("./routes/kiosk");
 const dashboardRoutes = require("./routes/dashboard");
 const dentverifyRoutes = require("./routes/dentverify");
 const settingsRoutes = require("./routes/settings");
+const { STAFF_TOKEN } = require("./middleware/auth");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -25,6 +26,7 @@ app.get("/", (req, res) => {
   res.json({
     message: "DentComm Kiosk API is running",
     endpoints: [
+      "POST /dentcomm/kiosk/session",
       "POST /dentcomm/kiosk/lookup",
       "GET /dentcomm/dashboard/pre-arrival",
       "GET /dentcomm/patients/:id",
@@ -39,4 +41,5 @@ app.use((req, res) => {
 
 app.listen(PORT, () => {
   console.log(`DentComm Kiosk backend running on http://localhost:${PORT}`);
+  console.log(`Staff auth token (dev only): ${STAFF_TOKEN}`);
 });

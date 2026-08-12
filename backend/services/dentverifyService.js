@@ -5,7 +5,7 @@ const { splitName } = require("../utils/name");
 // pre_arrival path this kiosk relies on, keyed on name/DOB/subscriber
 // instead of a chart ID.
 function buildRequestPayload(patient) {
-  const insurance = patient.kioskData.insuranceScan;
+  const insurance = patient.preArrivalState.insuranceScan;
   const { firstName: patientFirstName, lastName: patientLastName } = splitName(patient.name);
   const subscriberName = insurance.subscriberName || patient.name;
   const { firstName: subscriberFirstName, lastName: subscriberLastName } = splitName(subscriberName);
@@ -34,7 +34,7 @@ function buildRequestPayload(patient) {
 // actually ask for from it — same two-layer shape a real integration would
 // have (raw payer fields -> normalized display fields).
 function buildEvFormFields(patient, requestPayload) {
-  const insurance = patient.kioskData.insuranceScan;
+  const insurance = patient.preArrivalState.insuranceScan;
 
   return {
     PatientName: patient.name,
@@ -70,7 +70,7 @@ function deriveSummary(evFormFields) {
 }
 
 async function verifyInsurance(patient) {
-  const insurance = patient.kioskData.insuranceScan;
+  const insurance = patient.preArrivalState.insuranceScan;
 
   if (!insurance) {
     throw new Error("Insurance data is missing.");
@@ -86,7 +86,7 @@ async function verifyInsurance(patient) {
     identifier: {
       patient_identifier_type: "dentcomm_pre_arrival",
       dentcomm_record_id: patient.id,
-      patient_name: patient.kioskData.idScan?.legalName || patient.name,
+      patient_name: patient.preArrivalState.idScan?.legalName || patient.name,
       patient_dob: patient.dob,
       verification_context: "new_patient_kiosk",
       pms_patient_id: patient.pmsPatientId || null

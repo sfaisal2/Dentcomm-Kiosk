@@ -12,11 +12,22 @@ const {
 } = require("../services/ocrService");
 const { verifyInsurance } = require("../services/dentverifyService");
 const { calculateProgress, syncStatus } = require("../services/patientStateService");
+const { DEFAULT_CLINIC_ID, issueKioskSession, requireKioskSession, requireStaffAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
-function findPatient(id) {
-  return patients.find((p) => p.id === id);
+// Spec §2.1: the kiosk device opens "a dedicated patient-facing DentComm
+// view — authenticated as a kiosk session, not a staff session." A real
+// device would authenticate with a provisioned device credential; this
+// stands in for that handshake and issues a session scoped to one clinic.
+router.post("/session", (req, res) => {
+  const clinicId = req.body?.clinicId || DEFAULT_CLINIC_ID;
+  const token = issueKioskSession(clinicId, settings.kioskSessionTimeoutMinutes);
+  res.status(201).json({ token, clinicId, expiresInMinutes: settings.kioskSessionTimeoutMinutes });
+});
+
+function findPatient(req) {
+  return patients.find((p) => p.id === req.params.id && p.clinicId === req.clinicId);
 }
 
 // Kiosk sends images as base64 (data URL or bare base64) in the JSON body —
@@ -65,10 +76,11 @@ function withinLookupWindow(patient) {
   return apptTime >= now && apptTime - now <= windowMs;
 }
 
-router.post("/lookup", (req, res) => {
+router.post("/lookup", requireKioskSession, (req, res) => {
   const { name, dob, phone } = req.body;
 
   const patient = patients.find((p) => {
+    if (p.clinicId !== req.clinicId) return false;
     const nameMatch = name && p.name.toLowerCase().trim() === name.toLowerCase().trim();
     const dobMatch = dob && p.dob === dob;
     const phoneMatch = phone && p.phone.replace(/\D/g, "") === phone.replace(/\D/g, "");
@@ -83,8 +95,8 @@ router.post("/lookup", (req, res) => {
   res.json({ message: `Welcome, ${patient.name}`, patient });
 });
 
-router.post("/:id/id-scan", async (req, res) => {
-  const patient = findPatient(req.params.id);
+router.post("/:id/id-scan", requireKioskSession, async (req, res) => {
+  const patient = findPatient(req);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   try {
@@ -93,15 +105,15 @@ router.post("/:id/id-scan", async (req, res) => {
     const addressCheck = evaluateAddressPrompt(extractedIdData, patient);
     const zipCheck = flagZipServiceArea(extractedIdData, settings);
     const imageUrl = saveScanImage(patient.id, "id", imageBuffer);
+    const state = patient.preArrivalState;
 
-    patient.kioskData.idScan = { ...extractedIdData, ...addressCheck, ...zipCheck, imageUrl };
-    patient.kioskData.addressOverride = null;
+    state.idScan = { ...extractedIdData, ...addressCheck, ...zipCheck, imageUrl };
+    state.addressOverride = null;
 
     // Screen 2 failure path (spec §4): after 2 failed scans, offer staff assist.
     // A "failed" scan here = OCR couldn't extract cleanly (needs staff review).
-    patient.kioskData.idScanAttempts = (patient.kioskData.idScanAttempts || 0) + 1;
-    patient.kioskData.offerStaffAssist =
-      extractedIdData.needsStaffReview && patient.kioskData.idScanAttempts >= 2;
+    state.idScanAttempts = (state.idScanAttempts || 0) + 1;
+    state.offerStaffAssist = extractedIdData.needsStaffReview && state.idScanAttempts >= 2;
 
     syncStatus(patient);
     calculateProgress(patient);
@@ -114,15 +126,16 @@ router.post("/:id/id-scan", async (req, res) => {
 
 // Screen 2 (spec §4): patient confirms the ID-scanned address or supplies
 // an update. Either way the outcome is flagged on the DentComm record.
-router.patch("/:id/address", (req, res) => {
-  const patient = findPatient(req.params.id);
+router.patch("/:id/address", requireKioskSession, (req, res) => {
+  const patient = findPatient(req);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
-  if (!patient.kioskData.idScan) {
+  const state = patient.preArrivalState;
+  if (!state.idScan) {
     return res.status(400).json({ error: "ID scan must be completed first." });
   }
 
   const { confirmed, updatedAddress } = req.body;
-  patient.kioskData.addressOverride = {
+  state.addressOverride = {
     confirmed: !!confirmed,
     updatedAddress: confirmed ? null : (updatedAddress || null),
     flaggedAt: new Date().toISOString()
@@ -137,22 +150,22 @@ router.patch("/:id/address", (req, res) => {
 // Fires DentVerify in the background and lets the response return
 // immediately — spec §4 Screen 3: "Do not wait for results to proceed."
 function triggerDentVerify(patient) {
-  patient.dentverify = { status: "pending", results: null };
+  patient.preArrivalState.dentverify = { status: "pending", results: null };
   verifyInsurance(patient)
     .then((results) => {
-      patient.dentverify = { status: "verified", results };
+      patient.preArrivalState.dentverify = { status: "verified", results };
       syncStatus(patient);
       calculateProgress(patient);
       patient.updatedAt = new Date().toISOString();
     })
     .catch((error) => {
-      patient.dentverify = { status: "failed", results: null, error: error.message };
+      patient.preArrivalState.dentverify = { status: "failed", results: null, error: error.message };
       patient.updatedAt = new Date().toISOString();
     });
 }
 
-router.post("/:id/insurance-scan", async (req, res) => {
-  const patient = findPatient(req.params.id);
+router.post("/:id/insurance-scan", requireKioskSession, async (req, res) => {
+  const patient = findPatient(req);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   try {
@@ -162,7 +175,7 @@ router.post("/:id/insurance-scan", async (req, res) => {
     const frontImageUrl = saveScanImage(patient.id, "insurance-front", frontBuffer);
     const backImageUrl = saveScanImage(patient.id, "insurance-back", backBuffer);
 
-    patient.kioskData.insuranceScan = { ...extractedInsuranceData, frontImageUrl, backImageUrl };
+    patient.preArrivalState.insuranceScan = { ...extractedInsuranceData, frontImageUrl, backImageUrl };
     if (settings.dentVerifyAutoTrigger) triggerDentVerify(patient);
 
     syncStatus(patient);
@@ -176,8 +189,8 @@ router.post("/:id/insurance-scan", async (req, res) => {
 
 // Screen 3 failure path (spec §4): manual entry fallback if the card scan
 // fails. Always flagged for staff review, and still re-triggers DentVerify.
-router.post("/:id/insurance-manual", (req, res) => {
-  const patient = findPatient(req.params.id);
+router.post("/:id/insurance-manual", requireKioskSession, (req, res) => {
+  const patient = findPatient(req);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   const { memberId, groupNumber, carrier, planType } = req.body;
@@ -185,7 +198,7 @@ router.post("/:id/insurance-manual", (req, res) => {
     return res.status(400).json({ error: "Member ID and group number are required for manual entry." });
   }
 
-  patient.kioskData.insuranceScan = buildManualInsuranceEntry({ carrier, memberId, groupNumber, planType });
+  patient.preArrivalState.insuranceScan = buildManualInsuranceEntry({ carrier, memberId, groupNumber, planType });
   if (settings.dentVerifyAutoTrigger) triggerDentVerify(patient);
 
   syncStatus(patient);
@@ -197,8 +210,8 @@ router.post("/:id/insurance-manual", (req, res) => {
 // Screen 4 (spec §4): if a required home form wasn't completed remotely, the
 // patient can complete it inline at the kiosk. Consent forms are excluded —
 // those are signed at check-in, not marked complete here.
-router.post("/:id/forms/:formType/complete", (req, res) => {
-  const patient = findPatient(req.params.id);
+router.post("/:id/forms/:formType/complete", requireKioskSession, (req, res) => {
+  const patient = findPatient(req);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   const { formType } = req.params;
@@ -207,7 +220,7 @@ router.post("/:id/forms/:formType/complete", (req, res) => {
     return res.status(400).json({ error: "Unknown or non-self-serve form type." });
   }
 
-  patient.forms[formType] = { completed: true, completedAt: new Date().toISOString() };
+  patient.preArrivalState.forms[formType] = { completed: true, completedAt: new Date().toISOString() };
 
   syncStatus(patient);
   calculateProgress(patient);
@@ -219,8 +232,11 @@ router.post("/:id/forms/:formType/complete", (req, res) => {
 // PDF (embedding the signature image) and uploads it here; we keep only a
 // document reference on the patient record, never the raw signature pixels.
 // Staff-activated at check-in (spec Screen 5) — not part of the patient flow.
-router.post("/:id/signature", (req, res) => {
-  const patient = findPatient(req.params.id);
+// Called from the staff dashboard's Transfer Panel, so it's guarded by the
+// staff token rather than a kiosk session (spec: "Activated by staff from
+// the DentComm check-in panel — not self-service").
+router.post("/:id/signature", requireStaffAuth, (req, res) => {
+  const patient = findPatient(req);
   if (!patient) return res.status(404).json({ error: "Patient not found" });
 
   const { formType, pdfBase64 } = req.body;
@@ -238,7 +254,7 @@ router.post("/:id/signature", (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
-  patient.consentSignatures[formType] = { documentUrl, signedAt: new Date().toISOString() };
+  patient.preArrivalState.consentSignatures[formType] = { documentUrl, signedAt: new Date().toISOString() };
 
   syncStatus(patient);
   calculateProgress(patient);
